@@ -13,6 +13,19 @@ import csv
 from datetime import datetime
 import pandas as pd
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
+import openpyxl
+from openpyxl.chart import LineChart, Reference
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill  # Changed from openpyxl.drawing.fill
+from datetime import datetime
+from PyQt5.QtWidgets import QFileDialog, QMessageBox
+import numpy as np
+from openpyxl.styles import PatternFill
+from openpyxl.chart import LineChart, Reference, ScatterChart, Series
+from openpyxl import Workbook
+from openpyxl.drawing.line import LineProperties
+from openpyxl.chart.shapes import GraphicalProperties
+from openpyxl.chart.layout import Layout, ManualLayout
 
 class SerialThread(threading.Thread):
     """
@@ -170,25 +183,203 @@ class MainWindow(QtWidgets.QMainWindow):
         self.first_start = True
         self.save_btn.setEnabled(False)  
     
+    
+
     def save_to_excel(self):
+        import numpy as np
+
+        def extract_linear_dataset(x, y,
+                                slope_range,
+                                window_size=50,
+                                step=0.1):
+            
+            x = np.asarray(x)
+            y = np.asarray(y)
+            N = len(x)
+            if N < window_size:
+                raise ValueError("Data shorter than window size")
+
+            # --- STEP A: detect segment (as before) ---
+            valid = []
+            smin, smax = slope_range
+            for i in range(N - window_size + 1):
+                xs = x[i:i+window_size]
+                ys = y[i:i+window_size]
+                m, _ = np.polyfit(xs, ys, 1)
+                if smin <= m <= smax:
+                    valid.append(i)
+            if not valid:
+                raise ValueError("No segment found in slope range")
+
+            # group runs of consecutive window‐starts
+            runs, run = [], [valid[0]]
+            for idx in valid[1:]:
+                if idx == run[-1] + 1:
+                    run.append(idx)
+                else:
+                    runs.append(run); run = [idx]
+            runs.append(run)
+            best = max(runs, key=len)
+            first_win, last_win = best[0], best[-1]
+
+            # convert to true data indices (drop window edges)
+            start_idx = first_win + window_size - 1
+            end_idx   = last_win
+
+            # --- STEP B: fit one line to that segment ---
+            seg_x = x[start_idx:end_idx+1]
+            seg_y = y[start_idx:end_idx+1]
+            slope, intercept = np.polyfit(seg_x, seg_y, 1)
+
+            # --- STEP C: build new (x,y) along that line ---
+            x0, x1 = x[start_idx], x[end_idx]
+            # include x0, then steps of 'step' up to <= x1
+            new_x = np.arange(x0, x1 + step/2, step)
+            new_y = slope * new_x + intercept
+
+            new_data = list(zip(new_x.tolist(), new_y.tolist()))
+            return new_data, start_idx, end_idx, slope, intercept
+
+    
         if not any(self.part_data[m] for m in self.markers):
             QMessageBox.warning(self, "Save Error", "No data to save.")
             return
 
+        # Create filename with timestamp
         ts = datetime.now().strftime("%Y_%m_%d_%H%M%S")
-        default_name = f"run_{ts}.xlsx"
+        default_name = f"sensor_data_{ts}.xlsx"
         out_fn, _ = QFileDialog.getSaveFileName(self, "Save Excel File", default_name, "Excel Files (*.xlsx)")
-        
         if not out_fn:
             return
-    
-        with pd.ExcelWriter(out_fn, engine='openpyxl') as writer:
-            for m in self.markers:
-                data = self.part_data[m]
-                if data:
-                    df = pd.DataFrame(data, columns=['Time (s)', 'Displacement (in)'])
-                    df.to_excel(writer, sheet_name=m, index=False)
-        QMessageBox.information(self, "Saved", f"All data exported to:\n{out_fn}")
+
+        # Create workbook
+        wb = openpyxl.Workbook()
+
+        # Process each sensor's data
+        for m in self.markers:
+            data = self.part_data[m]
+            if not data:
+                continue
+
+            # Create worksheet for each sensor
+            if m == self.markers[0]:
+                ws = wb.active
+                ws.title = m
+            else:
+                ws = wb.create_sheet(title=m)
+
+            # Add headers
+            ws['A1'] = 'Time (s)'
+            ws['B1'] = 'Displacement (in)'
+
+            # Write data
+            numData = len(data)
+            for row, (time_val, disp_val) in enumerate(data, start=2):
+                ws[f'A{row}'] = time_val
+                ws[f'B{row}'] = disp_val
+
+            # Create scatter chart
+            chart = ScatterChart()
+            chart.title = f"{m} Displacement vs Time"
+            chart.height = 15
+            chart.width = 25
+            chart.x_axis.title = "Time (s)"
+            chart.y_axis.title = "Displacement (in)"
+            
+            chart.x_axis.delete = False
+            chart.y_axis.delete = False
+
+            chart.x_axis.majorGridlines = None
+
+            chart.y_axis.scaling.min = -10     
+            chart.y_axis.scaling.max = 70  
+
+            if chart.plot_area.layout is None:
+                chart.plot_area.layout = Layout()
+
+            chart.plot_area.layout = Layout(
+                manualLayout=ManualLayout(
+                    x=0.15,   # fraction from left edge (0.0–1.0)
+                    y=0.10,   # fraction from top edge  (0.0–1.0)
+                    w=0.70,   # width  as fraction of chart area
+                    h=0.75    # height as fraction of chart area
+                )
+)
+            # Create data references
+            xvals = Reference(ws, min_col=1, min_row=2, max_row=numData+1)
+            yvals = Reference(ws, min_col=2, min_row=2, max_row=numData+1)
+            
+            slope_range = (-100, 0)  #min , max
+
+            # Convert References to numpy arrays first
+            x_data = [ws[f'A{i}'].value for i in range(2, numData+2)]
+            y_data = [ws[f'B{i}'].value for i in range(2, numData+2)]
+            
+            
+
+            # Create series with explicit x and y values
+            series = Series(values=yvals, xvalues=xvals, title="")
+            chart.series.append(series)
+            
+            
+
+
+            # Style the markers - set consistent color
+            series.marker.symbol = "circle"
+            series.marker.size = 2
+            series.marker.graphicalProperties.solidFill = "0000FF"  # Blue color
+            series.marker.graphicalProperties.line.solidFill = "0000FF"  # Blue outline
+            series.graphicalProperties.line.noFill = True  # Remove connecting lines
+            series.smooth = None  # Ensure no line smoothing
+            
+            
+            try:
+                # Then call extract_linear_dataset with the arrays
+                fit_data, start_idx, end_idx, slope, intercept = extract_linear_dataset(
+                    np.array(x_data), 
+                    np.array(y_data), 
+                    slope_range
+                )
+                
+                # Write fitted line data to worksheet
+                col_c = numData + 5  # Leave some space between raw data and fitted line
+                ws['C1'] = 'Fitted Time'
+                ws['D1'] = 'Fitted Displacement'
+                
+                for i, (x, y) in enumerate(fit_data, start=2):
+                    ws[f'C{i}'] = x
+                    ws[f'D{i}'] = y
+                
+                # Create references for the fitted line data
+                fit_xvals = Reference(ws, min_col=3, min_row=2, max_row=len(fit_data)+1)
+                fit_yvals = Reference(ws, min_col=4, min_row=2, max_row=len(fit_data)+1)
+                
+                # Create series for fitted line
+                series2 = Series(values=fit_yvals, xvalues=fit_xvals, title="Fitted Line")
+                chart.series.append(series2)
+                
+                # Style the fitted line
+                series2.graphicalProperties.line.solidFill = "FF0000"  # Red color
+                series2.graphicalProperties.line.width = 25400  # Make line visible
+                series2.marker = None  # No markers for fitted line
+                
+                print(f"Slope: {slope}")
+                
+            except Exception as e:
+                print(f"Error fitting line: {e}")
+                pass
+
+
+            # Hide legend
+            chart.legend = None
+            
+            # Add chart to worksheet
+            ws.add_chart(chart, "D2")
+
+        # Save workbook
+        wb.save(out_fn)
+        QMessageBox.information(self, "Saved", f"Data and charts saved to:\n{out_fn}")
+
 
     def update_plots(self):
         updated = set() #weird
