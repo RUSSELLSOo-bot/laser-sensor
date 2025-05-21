@@ -31,7 +31,7 @@ class SerialThread(threading.Thread):
     """
     Thread that reads COM3 at 9600 baud and enqueues ES and EN values.
     """
-    def __init__(self, port='COM3', baud=9600):
+    def __init__(self, port='COM4', baud=9600):
         super().__init__(daemon=True)
         self.port = port
         self.baud = baud
@@ -136,7 +136,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.status)
 
         # Serial thread
-        self.serial_thread = SerialThread(port='COM3', baud=9600) #this is HARDCODED
+        self.serial_thread = SerialThread(port='COM4', baud=9600) #this is HARDCODED
         self.serial_thread.start()
 
         # Timer to update both plots
@@ -190,7 +190,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         def extract_linear_dataset(x, y,
                                 slope_range,
-                                window_size=50,
+                                window_size=25,
                                 step=0.1):
             
             x = np.asarray(x)
@@ -271,6 +271,23 @@ class MainWindow(QtWidgets.QMainWindow):
             # Add headers
             ws['A1'] = 'Time (s)'
             ws['B1'] = 'Displacement (in)'
+            ws['C1'] = 'Fitted Time'
+            ws['D1'] = 'Fitted Displacement'
+            ws[f'E{1}'] = "Fitted Slope (in/s)"
+            ws[f'E{4}'] = "Speed (in/min)"
+            
+            # Adjust column widths to fit content
+            for column in ['A', 'B', 'D', 'E', 'F']:
+                max_length = 0
+                column_letter = column
+                for cell in ws[column]:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = (max_length + 2) * 1.2
+                ws.column_dimensions[column_letter].width = adjusted_width
 
             # Write data
             numData = len(data)
@@ -332,7 +349,6 @@ class MainWindow(QtWidgets.QMainWindow):
             series.graphicalProperties.line.noFill = True  # Remove connecting lines
             series.smooth = None  # Ensure no line smoothing
             
-            
             try:
                 # Then call extract_linear_dataset with the arrays
                 fit_data, start_idx, end_idx, slope, intercept = extract_linear_dataset(
@@ -342,10 +358,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
                 
                 # Write fitted line data to worksheet
-                col_c = numData + 5  # Leave some space between raw data and fitted line
-                ws['C1'] = 'Fitted Time'
-                ws['D1'] = 'Fitted Displacement'
-                
                 for i, (x, y) in enumerate(fit_data, start=2):
                     ws[f'C{i}'] = x
                     ws[f'D{i}'] = y
@@ -354,16 +366,25 @@ class MainWindow(QtWidgets.QMainWindow):
                 fit_xvals = Reference(ws, min_col=3, min_row=2, max_row=len(fit_data)+1)
                 fit_yvals = Reference(ws, min_col=4, min_row=2, max_row=len(fit_data)+1)
                 
-                # Create series for fitted line
-                series2 = Series(values=fit_yvals, xvalues=fit_xvals, title="Fitted Line")
-                chart.series.append(series2)
                 
-                # Style the fitted line
-                series2.graphicalProperties.line.solidFill = "FF0000"  # Red color
-                series2.graphicalProperties.line.width = 25400  # Make line visible
-                series2.marker = None  # No markers for fitted line
+                # Add markers for points used in linear fit
+                series3 = Series(
+                    values=Reference(ws, min_col=2, min_row=start_idx+2, max_row=end_idx+2),
+                    xvalues=Reference(ws, min_col=1, min_row=start_idx+2, max_row=end_idx+2),
+                    title="Points Used in Fit"
+                )
+                chart.series.append(series3)
+                
+                # Style the fitted points
+                series3.marker.symbol = "diamond"
+                series3.marker.size = 7
+                series3.marker.graphicalProperties.solidFill = "FF0000"  # Red color
+                series3.graphicalProperties.line.noFill = True
+                
                 
                 print(f"Slope: {slope}")
+                ws[f'E{2}'] = slope
+                ws[f'E{5}'] = slope * 60
                 
             except Exception as e:
                 print(f"Error fitting line: {e}")
@@ -374,7 +395,8 @@ class MainWindow(QtWidgets.QMainWindow):
             chart.legend = None
             
             # Add chart to worksheet
-            ws.add_chart(chart, "D2")
+            ws.add_chart(chart, "G2")
+            
 
         # Save workbook
         wb.save(out_fn)
